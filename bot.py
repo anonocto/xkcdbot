@@ -3,8 +3,8 @@ import feedparser
 import asyncio
 import os
 
-TOKEN = "YOUR_DISCORD_BOT_TOKEN"
-CHANNEL_ID = YOUR_CHANNEL_ID  # Replace with your channel ID
+TOKEN = BOT_TOKEN
+CHANNEL_ID = 1359938902084812832  # Replace with your channel ID
 RSS_URL = "https://xkcd.com/atom.xml"  # XKCD Atom feed
 
 intents = discord.Intents.default()
