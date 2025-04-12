@@ -1,45 +1,79 @@
-import discord
 import feedparser
-import asyncio
-import os
+from datetime import datetime, timedelta, timezone
+import sqlite3
+import discord
+from discord.ext import commands, tasks
 
-TOKEN = BOT_TOKEN
-CHANNEL_ID = 1359938902084812832  # Replace with your channel ID
-RSS_URL = "https://xkcd.com/atom.xml"  # XKCD Atom feed
+from config import TOKEN, CHANNEL_ID, UPDATE_INTERVAL, LAST_ARTICLE_RANGE, RSS_FEEDS
 
-intents = discord.Intents.default()
-client = discord.Client(intents=intents)
 
-latest_post = None
+connection = sqlite3.connect('articles.db')
+c = connection.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS articles (title TEXT, link TEXT)''')
+connection.commit()
 
-async def fetch_latest_comic():
-    global latest_post
-    feed = feedparser.parse(RSS_URL)
-    if feed.entries:
-        entry = feed.entries[0]
-        title = entry.title
-        link = entry.link
-        img_url = entry.media_content[0]['url'] if 'media_content' in entry else None
-        return title, link, img_url
-    return None, None, None
+bot = commands.Bot(command_prefix='!', intents=discord.Intents.all())
 
-async def check_rss():
-    global latest_post
-    await client.wait_until_ready()
-    channel = client.get_channel(CHANNEL_ID)
-    while not client.is_closed():
-        title, link, img_url = await fetch_latest_comic()
-        if title and link and latest_post != link:
-            latest_post = link
-            embed = discord.Embed(title=title, url=link, color=0x00ff00)
-            if img_url:
-                embed.set_image(url=img_url)
-            await channel.send(embed=embed)
-        await asyncio.sleep(3600)  # Check every hour
 
-@client.event
+def record_article_in_db(article):
+	c.execute("INSERT INTO articles (title, link) VALUES (?, ?)", (article.title, article.link))
+	connection.commit()
+
+
+def article_in_db(entry):
+	c.execute("SELECT link FROM articles WHERE link=?", (entry.link,))
+	if c.fetchone() is None:
+		return False
+	else:
+		return True
+
+
+def get_new_articles():
+	new_articles = []
+
+	for rss_feed in RSS_FEEDS:
+		entries = feedparser.parse(rss_feed["url"]).entries
+		for entry in entries:
+			if not article_in_db(entry):
+				pub_date = datetime.strptime(entry.published, "%a, %d %b %Y %H:%M:%S %z").replace(tzinfo=timezone.utc)
+				if datetime.now(timezone.utc) - pub_date <= timedelta(days=LAST_ARTICLE_RANGE):
+					new_articles.append({"article": entry, "user": rss_feed["user"], "feedTitle": feedparser.parse(rss_feed["url"]).feed.title})
+
+	return new_articles
+
+
+def format_to_message(article):
+	article_title = article["article"].title
+	article_user = article["user"]
+	article_feed_title = article["feedTitle"]
+	article_link = article["article"].link
+
+	message = f"**{article_title}** by "
+	if article_user:
+		message += f"<@{article_user}>"
+	else:
+		message += f"{article_feed_title}"
+	message += f"\n{article_link}"
+
+	return message
+
+
+@bot.event
 async def on_ready():
-    print(f"Logged in as {client.user}")
-    client.loop.create_task(check_rss())
+	print(f'{bot.user} has connected to Discord!')
+	post_new_articles.start()
 
-client.run(TOKEN)
+
+@tasks.loop(minutes=UPDATE_INTERVAL)
+async def post_new_articles():
+	channel = bot.get_channel(CHANNEL_ID)
+
+	new_articles = get_new_articles()
+	for article in new_articles:
+		message = format_to_message(article)
+		await channel.send(message)
+		record_article_in_db(article["article"])
+
+
+if __name__ == "__main__":
+	bot.run(TOKEN)
